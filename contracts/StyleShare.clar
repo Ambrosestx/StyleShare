@@ -1,5 +1,5 @@
 ;; StyleShare - Decentralized Fashion Rental Marketplace
-;; A smart contract for peer-to-peer fashion item rentals with escrow and reputation system
+;; A smart contract for peer-to-peer fashion item rentals with escrow, reputation system, and dispute resolution
 
 (define-constant CONTRACT_OWNER tx-sender)
 (define-constant ERR_UNAUTHORIZED (err u100))
@@ -13,6 +13,21 @@
 (define-constant ERR_SELF_RENTAL (err u108))
 (define-constant ERR_RENTAL_ACTIVE (err u109))
 (define-constant ERR_INVALID_RATING (err u110))
+(define-constant ERR_DISPUTE_NOT_FOUND (err u111))
+(define-constant ERR_DISPUTE_ALREADY_EXISTS (err u112))
+(define-constant ERR_DISPUTE_ALREADY_RESOLVED (err u113))
+(define-constant ERR_NOT_ARBITRATOR (err u114))
+(define-constant ERR_ALREADY_VOTED (err u115))
+(define-constant ERR_INVALID_VOTE (err u116))
+(define-constant ERR_VOTING_PERIOD_ENDED (err u117))
+(define-constant ERR_INSUFFICIENT_STAKE (err u118))
+(define-constant ERR_ALREADY_ARBITRATOR (err u119))
+(define-constant ERR_ARBITRATOR_NOT_FOUND (err u120))
+
+;; Constants for dispute system
+(define-constant MIN_ARBITRATOR_STAKE u1000000) ;; 1 STX minimum stake
+(define-constant DISPUTE_VOTING_PERIOD u1440) ;; ~10 days in blocks (assuming 10 min blocks)
+(define-constant MIN_ARBITRATORS_FOR_RESOLUTION u3)
 
 ;; Data structures
 (define-map fashion-items
@@ -42,7 +57,8 @@
     total-cost: uint,
     security-deposit: uint,
     returned: bool,
-    rating-given: bool
+    rating-given: bool,
+    dispute-id: (optional uint)
   }
 )
 
@@ -56,10 +72,47 @@
   }
 )
 
+;; Dispute resolution system maps
+(define-map disputes
+  { dispute-id: uint }
+  {
+    rental-id: uint,
+    complainant: principal,
+    defendant: principal,
+    reason: (string-ascii 500),
+    created-block: uint,
+    resolved: bool,
+    resolution: (optional (string-ascii 200)),
+    votes-for-complainant: uint,
+    votes-for-defendant: uint,
+    total-votes: uint
+  }
+)
+
+(define-map arbitrators
+  { arbitrator: principal }
+  {
+    stake-amount: uint,
+    total-cases: uint,
+    reputation-score: uint,
+    active: bool
+  }
+)
+
+(define-map arbitrator-votes
+  { dispute-id: uint, arbitrator: principal }
+  {
+    vote: bool, ;; true for complainant, false for defendant
+    reasoning: (string-ascii 300)
+  }
+)
+
 ;; Counters
 (define-data-var next-item-id uint u1)
 (define-data-var next-rental-id uint u1)
+(define-data-var next-dispute-id uint u1)
 (define-data-var platform-fee-rate uint u250) ;; 2.5% in basis points
+(define-data-var total-arbitrators uint u0)
 
 ;; Helper functions
 (define-private (is-valid-string (str (string-ascii 100)))
@@ -98,8 +151,23 @@
   (and (> rental-id u0) (< rental-id (var-get next-rental-id)))
 )
 
+(define-private (is-valid-dispute-id (dispute-id uint))
+  (and (> dispute-id u0) (< dispute-id (var-get next-dispute-id)))
+)
+
 (define-private (calculate-platform-fee (amount uint))
   (/ (* amount (var-get platform-fee-rate)) u10000)
+)
+
+(define-private (is-voting-period-active (created-block uint))
+  (<= (- stacks-block-height created-block) DISPUTE_VOTING_PERIOD)
+)
+
+(define-private (is-arbitrator (user principal))
+  (match (map-get? arbitrators { arbitrator: user })
+    arbitrator-data (get active arbitrator-data)
+    false
+  )
 )
 
 (define-private (update-user-profile (user principal) (rental-count uint) (items-rented uint) (earnings uint))
@@ -178,7 +246,8 @@
         total-cost: total-cost,
         security-deposit: security-deposit,
         returned: false,
-        rating-given: false
+        rating-given: false,
+        dispute-id: none
       }
     )
     
@@ -206,6 +275,9 @@
     (asserts! (is-valid-rental-id rental-id) ERR_RENTAL_NOT_FOUND)
     (asserts! (is-eq tx-sender (get renter rental)) ERR_UNAUTHORIZED)
     (asserts! (not (get returned rental)) ERR_RENTAL_ALREADY_RETURNED)
+    
+    ;; Check if there's an active dispute
+    (asserts! (is-none (get dispute-id rental)) ERR_DISPUTE_ALREADY_EXISTS)
     
     ;; Calculate payments
     (let ((platform-fee (calculate-platform-fee (get total-cost rental)))
@@ -289,6 +361,210 @@
   )
 )
 
+;; Dispute Resolution Functions
+(define-public (register-arbitrator (stake-amount uint))
+  (begin
+    (asserts! (>= stake-amount MIN_ARBITRATOR_STAKE) ERR_INSUFFICIENT_STAKE)
+    (asserts! (not (is-arbitrator tx-sender)) ERR_ALREADY_ARBITRATOR)
+    
+    ;; Transfer stake to contract
+    (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+    
+    ;; Register arbitrator
+    (map-set arbitrators
+      { arbitrator: tx-sender }
+      {
+        stake-amount: stake-amount,
+        total-cases: u0,
+        reputation-score: u0,
+        active: true
+      }
+    )
+    
+    ;; Update total arbitrators count
+    (var-set total-arbitrators (+ (var-get total-arbitrators) u1))
+    
+    (ok true)
+  )
+)
+
+(define-public (create-dispute (rental-id uint) (reason (string-ascii 500)))
+  (let ((rental (unwrap! (map-get? rentals { rental-id: rental-id }) ERR_RENTAL_NOT_FOUND))
+        (dispute-id (var-get next-dispute-id)))
+    
+    (asserts! (is-valid-rental-id rental-id) ERR_RENTAL_NOT_FOUND)
+    (asserts! (is-valid-description reason) ERR_INVALID_PRICE)
+    (asserts! (or (is-eq tx-sender (get renter rental)) (is-eq tx-sender (get owner rental))) ERR_UNAUTHORIZED)
+    (asserts! (is-none (get dispute-id rental)) ERR_DISPUTE_ALREADY_EXISTS)
+    (asserts! (not (get returned rental)) ERR_RENTAL_ALREADY_RETURNED)
+    
+    ;; Determine complainant and defendant
+    (let ((complainant tx-sender)
+          (defendant (if (is-eq tx-sender (get renter rental)) (get owner rental) (get renter rental))))
+      
+      ;; Create dispute record
+      (map-set disputes
+        { dispute-id: dispute-id }
+        {
+          rental-id: rental-id,
+          complainant: complainant,
+          defendant: defendant,
+          reason: reason,
+          created-block: stacks-block-height,
+          resolved: false,
+          resolution: none,
+          votes-for-complainant: u0,
+          votes-for-defendant: u0,
+          total-votes: u0
+        }
+      )
+      
+      ;; Link dispute to rental
+      (map-set rentals
+        { rental-id: rental-id }
+        (merge rental { dispute-id: (some dispute-id) })
+      )
+      
+      ;; Update counter
+      (var-set next-dispute-id (+ dispute-id u1))
+      
+      (ok dispute-id)
+    )
+  )
+)
+
+(define-public (vote-on-dispute (dispute-id uint) (vote-for-complainant bool) (reasoning (string-ascii 300)))
+  (let ((dispute (unwrap! (map-get? disputes { dispute-id: dispute-id }) ERR_DISPUTE_NOT_FOUND)))
+    
+    (asserts! (is-valid-dispute-id dispute-id) ERR_DISPUTE_NOT_FOUND)
+    (asserts! (is-arbitrator tx-sender) ERR_NOT_ARBITRATOR)
+    (asserts! (not (get resolved dispute)) ERR_DISPUTE_ALREADY_RESOLVED)
+    (asserts! (is-voting-period-active (get created-block dispute)) ERR_VOTING_PERIOD_ENDED)
+    (asserts! (is-none (map-get? arbitrator-votes { dispute-id: dispute-id, arbitrator: tx-sender })) ERR_ALREADY_VOTED)
+    (asserts! (> (len reasoning) u0) ERR_INVALID_VOTE)
+    
+    ;; Record the vote
+    (map-set arbitrator-votes
+      { dispute-id: dispute-id, arbitrator: tx-sender }
+      {
+        vote: vote-for-complainant,
+        reasoning: reasoning
+      }
+    )
+    
+    ;; Update dispute vote counts
+    (let ((new-complainant-votes (if vote-for-complainant 
+                                    (+ (get votes-for-complainant dispute) u1)
+                                    (get votes-for-complainant dispute)))
+          (new-defendant-votes (if vote-for-complainant 
+                                 (get votes-for-defendant dispute)
+                                 (+ (get votes-for-defendant dispute) u1)))
+          (new-total-votes (+ (get total-votes dispute) u1)))
+      
+      (map-set disputes
+        { dispute-id: dispute-id }
+        (merge dispute {
+          votes-for-complainant: new-complainant-votes,
+          votes-for-defendant: new-defendant-votes,
+          total-votes: new-total-votes
+        })
+      )
+      
+      ;; Update arbitrator stats
+      (let ((arbitrator-data (unwrap! (map-get? arbitrators { arbitrator: tx-sender }) ERR_ARBITRATOR_NOT_FOUND)))
+        (map-set arbitrators
+          { arbitrator: tx-sender }
+          (merge arbitrator-data { total-cases: (+ (get total-cases arbitrator-data) u1) })
+        )
+      )
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (resolve-dispute (dispute-id uint))
+  (let ((dispute (unwrap! (map-get? disputes { dispute-id: dispute-id }) ERR_DISPUTE_NOT_FOUND))
+        (rental (unwrap! (map-get? rentals { rental-id: (get rental-id dispute) }) ERR_RENTAL_NOT_FOUND)))
+    
+    (asserts! (is-valid-dispute-id dispute-id) ERR_DISPUTE_NOT_FOUND)
+    (asserts! (not (get resolved dispute)) ERR_DISPUTE_ALREADY_RESOLVED)
+    (asserts! (>= (get total-votes dispute) MIN_ARBITRATORS_FOR_RESOLUTION) ERR_INSUFFICIENT_PAYMENT)
+    (asserts! (not (is-voting-period-active (get created-block dispute))) ERR_VOTING_PERIOD_ENDED)
+    
+    ;; Determine winner based on votes
+    (let ((complainant-wins (> (get votes-for-complainant dispute) (get votes-for-defendant dispute)))
+          (platform-fee (calculate-platform-fee (get total-cost rental))))
+      
+      ;; Resolve dispute and distribute funds
+      (if complainant-wins
+        ;; Complainant wins - return funds to complainant
+        (begin
+          (try! (as-contract (stx-transfer? (+ (get total-cost rental) (get security-deposit rental)) 
+                                           tx-sender (get complainant dispute))))
+          (map-set disputes
+            { dispute-id: dispute-id }
+            (merge dispute { 
+              resolved: true, 
+              resolution: (some "Resolved in favor of complainant") 
+            })
+          )
+        )
+        ;; Defendant wins - pay defendant and return security deposit
+        (begin
+          (let ((owner-payment (- (get total-cost rental) platform-fee)))
+            (try! (as-contract (stx-transfer? owner-payment tx-sender (get defendant dispute))))
+            (try! (as-contract (stx-transfer? (get security-deposit rental) tx-sender (get complainant dispute))))
+          )
+          (map-set disputes
+            { dispute-id: dispute-id }
+            (merge dispute { 
+              resolved: true, 
+              resolution: (some "Resolved in favor of defendant") 
+            })
+          )
+        )
+      )
+      
+      ;; Mark rental as resolved
+      (map-set rentals
+        { rental-id: (get rental-id dispute) }
+        (merge rental { returned: true })
+      )
+      
+      ;; Make item available again
+      (let ((item (unwrap! (map-get? fashion-items { item-id: (get item-id rental) }) ERR_ITEM_NOT_FOUND)))
+        (map-set fashion-items
+          { item-id: (get item-id rental) }
+          (merge item { available: true })
+        )
+      )
+      
+      (ok true)
+    )
+  )
+)
+
+(define-public (deactivate-arbitrator)
+  (let ((arbitrator-data (unwrap! (map-get? arbitrators { arbitrator: tx-sender }) ERR_ARBITRATOR_NOT_FOUND)))
+    (asserts! (get active arbitrator-data) ERR_ARBITRATOR_NOT_FOUND)
+    
+    ;; Return stake to arbitrator
+    (try! (as-contract (stx-transfer? (get stake-amount arbitrator-data) tx-sender tx-sender)))
+    
+    ;; Deactivate arbitrator
+    (map-set arbitrators
+      { arbitrator: tx-sender }
+      (merge arbitrator-data { active: false })
+    )
+    
+    ;; Update total arbitrators count
+    (var-set total-arbitrators (- (var-get total-arbitrators) u1))
+    
+    (ok true)
+  )
+)
+
 ;; Read-only functions
 (define-read-only (get-fashion-item (item-id uint))
   (begin
@@ -304,6 +580,21 @@
   )
 )
 
+(define-read-only (get-dispute (dispute-id uint))
+  (begin
+    (asserts! (is-valid-dispute-id dispute-id) ERR_DISPUTE_NOT_FOUND)
+    (ok (map-get? disputes { dispute-id: dispute-id }))
+  )
+)
+
+(define-read-only (get-arbitrator (arbitrator principal))
+  (map-get? arbitrators { arbitrator: arbitrator })
+)
+
+(define-read-only (get-arbitrator-vote (dispute-id uint) (arbitrator principal))
+  (map-get? arbitrator-votes { dispute-id: dispute-id, arbitrator: arbitrator })
+)
+
 (define-read-only (get-user-profile (user principal))
   (map-get? user-profiles { user: user })
 )
@@ -316,6 +607,22 @@
   (var-get next-rental-id)
 )
 
+(define-read-only (get-next-dispute-id)
+  (var-get next-dispute-id)
+)
+
 (define-read-only (get-platform-fee-rate)
   (var-get platform-fee-rate)
+)
+
+(define-read-only (get-total-arbitrators)
+  (var-get total-arbitrators)
+)
+
+(define-read-only (get-min-arbitrator-stake)
+  MIN_ARBITRATOR_STAKE
+)
+
+(define-read-only (get-dispute-voting-period)
+  DISPUTE_VOTING_PERIOD
 )
