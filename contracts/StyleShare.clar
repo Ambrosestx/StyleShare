@@ -23,11 +23,16 @@
 (define-constant ERR_INSUFFICIENT_STAKE (err u118))
 (define-constant ERR_ALREADY_ARBITRATOR (err u119))
 (define-constant ERR_ARBITRATOR_NOT_FOUND (err u120))
+(define-constant ERR_EMPTY_BATCH (err u121))
+(define-constant ERR_BATCH_TOO_LARGE (err u122))
 
 ;; Constants for dispute system
 (define-constant MIN_ARBITRATOR_STAKE u1000000) ;; 1 STX minimum stake
 (define-constant DISPUTE_VOTING_PERIOD u1440) ;; ~10 days in blocks (assuming 10 min blocks)
 (define-constant MIN_ARBITRATORS_FOR_RESOLUTION u3)
+
+;; Constants for bulk operations
+(define-constant MAX_BULK_ITEMS u10) ;; Maximum items per bulk operation
 
 ;; Data structures
 (define-map fashion-items
@@ -219,6 +224,46 @@
   )
 )
 
+;; Bulk listing helper function
+(define-private (list-single-item-internal 
+                  (item-data { title: (string-ascii 100), 
+                              description: (string-ascii 500), 
+                              category: (string-ascii 50), 
+                              size: (string-ascii 10), 
+                              daily-rate: uint, 
+                              security-deposit: uint })
+                  (acc (response (list 10 uint) uint)))
+  (match acc
+    success-list
+      (match (list-fashion-item 
+               (get title item-data)
+               (get description item-data)
+               (get category item-data)
+               (get size item-data)
+               (get daily-rate item-data)
+               (get security-deposit item-data))
+        item-id (ok (unwrap-panic (as-max-len? (append success-list item-id) u10)))
+        error (err error)
+      )
+    error (err error)
+  )
+)
+
+;; Bulk list items function
+(define-public (bulk-list-items (items (list 10 { title: (string-ascii 100), 
+                                                   description: (string-ascii 500), 
+                                                   category: (string-ascii 50), 
+                                                   size: (string-ascii 10), 
+                                                   daily-rate: uint, 
+                                                   security-deposit: uint })))
+  (let ((items-count (len items)))
+    (asserts! (> items-count u0) ERR_EMPTY_BATCH)
+    (asserts! (<= items-count MAX_BULK_ITEMS) ERR_BATCH_TOO_LARGE)
+    
+    (fold list-single-item-internal items (ok (list)))
+  )
+)
+
 (define-public (rent-item (item-id uint) (duration-days uint))
   (let ((item (unwrap! (map-get? fashion-items { item-id: item-id }) ERR_ITEM_NOT_FOUND))
         (rental-id (var-get next-rental-id))
@@ -264,6 +309,44 @@
     (update-user-profile tx-sender u0 u1 u0)
     
     (ok rental-id)
+  )
+)
+
+;; Bulk rental helper function
+(define-private (rent-single-item-internal 
+                  (rental-request { item-id: uint, duration-days: uint })
+                  (acc (response { rental-ids: (list 10 uint), total-payment: uint } uint)))
+  (match acc
+    success-data
+      (match (rent-item (get item-id rental-request) (get duration-days rental-request))
+        rental-id 
+          (let ((item (unwrap-panic (map-get? fashion-items { item-id: (get item-id rental-request) })))
+                (total-cost (* (get daily-rate item) (get duration-days rental-request)))
+                (security-deposit (get security-deposit item))
+                (item-payment (+ total-cost security-deposit)))
+            (ok { 
+              rental-ids: (unwrap-panic (as-max-len? (append (get rental-ids success-data) rental-id) u10)),
+              total-payment: (+ (get total-payment success-data) item-payment)
+            })
+          )
+        error (err error)
+      )
+    error (err error)
+  )
+)
+
+;; Bulk rent items function
+(define-public (bulk-rent-items (rental-requests (list 10 { item-id: uint, duration-days: uint })))
+  (let ((requests-count (len rental-requests)))
+    (asserts! (> requests-count u0) ERR_EMPTY_BATCH)
+    (asserts! (<= requests-count MAX_BULK_ITEMS) ERR_BATCH_TOO_LARGE)
+    
+    (match (fold rent-single-item-internal 
+                 rental-requests 
+                 (ok { rental-ids: (list), total-payment: u0 }))
+      success (ok (get rental-ids success))
+      error (err error)
+    )
   )
 )
 
@@ -625,4 +708,8 @@
 
 (define-read-only (get-dispute-voting-period)
   DISPUTE_VOTING_PERIOD
+)
+
+(define-read-only (get-max-bulk-items)
+  MAX_BULK_ITEMS
 )
