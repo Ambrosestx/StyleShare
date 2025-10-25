@@ -13,6 +13,7 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - **Secure Rental System**: Automated escrow system holds payments and security deposits until items are returned
 - **Reputation System**: Built-in rating system for items and users to build trust in the marketplace
 - **Dispute Resolution System**: Multi-signature arbitration system for rental conflicts with community-voted arbitrators
+- **Emergency Pause Mechanism**: Contract owner can pause operations for maintenance or security incidents
 - **Multi-Category Support**: Supports various fashion categories with size specifications
 - **Flexible Duration**: Rental periods from 1 day up to 365 days
 - **Platform Fee Structure**: Transparent 2.5% platform fee on successful rentals
@@ -37,6 +38,10 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - `resolve-dispute`: Execute dispute resolution based on community votes
 - `deactivate-arbitrator`: Deactivate arbitrator status and retrieve stake
 
+**Emergency Functions:**
+- `pause-contract`: Pause all marketplace operations (owner only)
+- `unpause-contract`: Resume marketplace operations (owner only)
+
 ### Read-Only Functions
 
 - `get-fashion-item`: Retrieve item details
@@ -53,6 +58,78 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - `get-min-arbitrator-stake`: Minimum stake required for arbitrators
 - `get-dispute-voting-period`: Voting period duration for disputes
 - `get-max-bulk-items`: Maximum items allowed in bulk operations
+- `is-contract-paused`: Check if contract is currently paused
+
+## Emergency Pause System
+
+### Overview
+The emergency pause mechanism allows the contract owner to temporarily halt all marketplace operations during critical situations such as:
+- Security vulnerabilities or exploits
+- Planned maintenance and upgrades
+- Regulatory compliance requirements
+- Emergency bug fixes
+
+### How It Works
+
+**Pausing the Contract:**
+- Only the contract owner can pause operations
+- Call `pause-contract` to activate emergency pause
+- All marketplace operations (listing, renting, arbitrator registration, bulk operations) are immediately blocked
+- Ongoing rentals can still be returned and disputes can still be resolved
+
+**Unpause Operations:**
+- Only the contract owner can unpause
+- Call `unpause-contract` to resume normal operations
+- All functions become available again immediately
+
+**Protected Operations:**
+The following operations are blocked during pause:
+- `list-fashion-item`
+- `bulk-list-items`
+- `rent-item`
+- `bulk-rent-items`
+- `register-arbitrator`
+
+**Allowed Operations During Pause:**
+Critical user functions remain available:
+- `return-item` - Users can return items and receive refunds
+- `rate-rental` - Users can rate completed rentals
+- `create-dispute` - Users can create disputes for protection
+- `vote-on-dispute` - Arbitrators can continue voting
+- `resolve-dispute` - Disputes can be resolved
+- `deactivate-arbitrator` - Arbitrators can withdraw stakes
+- `update-item-availability` - Owners can manage their items
+- All read-only functions remain available
+
+### Use Cases
+
+**Security Incident:**
+```clarity
+;; Contract owner detects a potential exploit
+(pause-contract)
+;; Investigate and fix the issue
+;; Deploy patch or mitigation
+(unpause-contract)
+```
+
+**Planned Maintenance:**
+```clarity
+;; Before major upgrade or migration
+(pause-contract)
+;; Perform maintenance tasks
+;; Test new features
+(unpause-contract)
+```
+
+**Emergency Response:**
+```clarity
+;; Rapid response to critical bug
+(pause-contract)
+;; Allow users to safely exit positions
+;; Disputes continue to resolve
+;; Implement fix
+(unpause-contract)
+```
 
 ## Data Structures
 
@@ -149,6 +226,7 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Minimum Items**: 1 item (empty batches rejected with `ERR_EMPTY_BATCH`)
 - **Validation**: All items validated before any operation executes
 - **Error Handling**: If any item fails validation, entire batch fails
+- **Pause Aware**: Bulk operations respect contract pause state
 
 ## Dispute Resolution System
 
@@ -200,6 +278,8 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Time-Locked Voting**: Prevents manipulation of dispute outcomes
 - **Atomic Operations**: Bulk operations succeed completely or fail completely
 - **No Unchecked Data**: All data properly validated throughout execution
+- **Emergency Pause**: Circuit breaker for security incidents
+- **Owner Controls**: Critical admin functions protected by ownership checks
 
 ## Error Codes
 
@@ -232,6 +312,9 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - `u121`: Empty batch - no items provided
 - `u122`: Batch too large - exceeds maximum of 10 items
 
+**Emergency Controls:**
+- `u123`: Contract paused - operations temporarily disabled
+
 ## Platform Economics
 
 - **Platform Fee**: 2.5% of rental cost (250 basis points)
@@ -241,6 +324,26 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Arbitrator Staking**: Minimum 1 STX stake (1,000,000 microSTX)
 - **Dispute Resolution**: Community-driven with economic incentives for fair arbitration
 - **Bulk Discounts**: Reduced per-item transaction costs through batching
+
+## Benefits of Emergency Pause
+
+### For Users
+- **Protection**: Operations halt during security incidents
+- **Confidence**: Know the platform can respond to threats
+- **Safe Exit**: Can still return items and resolve disputes
+- **Transparency**: Pause state visible to all users
+
+### For Contract Owner
+- **Security Response**: Quick reaction to vulnerabilities
+- **Maintenance Window**: Safe environment for upgrades
+- **Risk Management**: Control over critical situations
+- **Compliance**: Meet regulatory requirements when needed
+
+### For the Platform
+- **Security**: Circuit breaker for emergency situations
+- **Stability**: Controlled maintenance windows
+- **Trust**: Demonstrates responsible platform management
+- **Flexibility**: Adapt to changing conditions safely
 
 ## Benefits of Bulk Operations
 
@@ -295,13 +398,23 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Error Handling**: Comprehensive validation and error reporting
 - **Upgradeability**: Extensible design for future enhancements
 - **Bulk Processing**: Efficient fold operations with proper error propagation
+- **Emergency Controls**: Built-in circuit breaker for security
+
+### Emergency Pause Implementation
+- **State Variable**: Single boolean flag controls pause state
+- **Function Guards**: All critical functions check pause state
+- **Owner Only**: Pause/unpause restricted to contract owner
+- **Read Functions**: Query functions always available
+- **Critical Path**: Return and dispute functions remain operational
+- **Atomic State**: Pause state changes take effect immediately
 
 ### Bulk Operations Flow
 1. Validate batch size (1-10 items)
-2. Iterate through items using fold
-3. Validate each item individually
-4. Execute operations atomically
-5. Return success with list of IDs or error on any failure
+2. Check contract pause state
+3. Iterate through items using fold
+4. Validate each item individually
+5. Execute operations atomically
+6. Return success with list of IDs or error on any failure
 
 ### Dispute Resolution Flow
 1. Dispute creation locks rental funds in escrow
@@ -313,6 +426,14 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 
 ## Testing Recommendations
 
+### Emergency Pause Testing
+- Verify only owner can pause/unpause
+- Test all functions are blocked when paused
+- Verify critical functions (return, disputes) still work
+- Test pause state persists correctly
+- Verify unpause restores full functionality
+- Test unauthorized pause attempts fail
+
 ### Bulk Operations Testing
 - Test with 1, 5, and 10 items (boundary conditions)
 - Verify empty batch rejection
@@ -322,6 +443,7 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - Compare gas costs vs individual operations
 - Test with invalid data in batch
 - Verify proper error propagation
+- Test bulk operations respect pause state
 
 ### Standard Testing
 - Happy path: Complete rental lifecycle
@@ -343,6 +465,9 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Scheduled Rentals**: Pre-book items for future dates
 - **Bulk Rating System**: Rate multiple rentals in one transaction
 - **Analytics Dashboard**: Usage statistics for bulk operations
+- **Automated Pause Triggers**: Smart pause based on suspicious activity detection
+- **Multi-sig Admin**: Multiple owners for critical functions
+- **Gradual Resume**: Phased unpause for high-traffic periods
 
 ## Contributing
 
@@ -353,7 +478,30 @@ We welcome contributions! Please ensure:
 - Comprehensive error handling
 - Updated documentation for new features
 - Test coverage for new functionality
+- Security considerations documented
+- Emergency pause integration for new critical functions
+
+## Change Log
+
+### Version 2.1.0 - Emergency Pause System
+- Added `pause-contract` and `unpause-contract` functions for emergency control
+- Added `is-contract-paused` read-only function
+- Integrated pause checks into all critical marketplace operations
+- New error code `ERR_CONTRACT_PAUSED` (u123)
+- Maintained operational capability for returns and disputes during pause
+- Enhanced security and platform management capabilities
+
+### Version 2.0.0 - Bulk Operations Update
+- Added `bulk-list-items` for efficient multi-item listing
+- Added `bulk-rent-items` for batch rental operations
+- Implemented MAX_BULK_ITEMS constant (10 items max)
+- Added error codes for batch operations (u121, u122)
+- Optimized gas costs through batching
+- Enhanced user experience for power users
 
 ---
 
-**Version**: 2.0.0 (Bulk Operations Update)  
+**Version**: 2.1.0 (Emergency Pause System)  
+**License**: MIT  
+**Blockchain**: Stacks  
+**Language**: Clarity

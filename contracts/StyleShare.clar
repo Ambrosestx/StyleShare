@@ -25,6 +25,7 @@
 (define-constant ERR_ARBITRATOR_NOT_FOUND (err u120))
 (define-constant ERR_EMPTY_BATCH (err u121))
 (define-constant ERR_BATCH_TOO_LARGE (err u122))
+(define-constant ERR_CONTRACT_PAUSED (err u123))
 
 ;; Constants for dispute system
 (define-constant MIN_ARBITRATOR_STAKE u1000000) ;; 1 STX minimum stake
@@ -112,12 +113,13 @@
   }
 )
 
-;; Counters
+;; Counters and state variables
 (define-data-var next-item-id uint u1)
 (define-data-var next-rental-id uint u1)
 (define-data-var next-dispute-id uint u1)
 (define-data-var platform-fee-rate uint u250) ;; 2.5% in basis points
 (define-data-var total-arbitrators uint u0)
+(define-data-var contract-paused bool false)
 
 ;; Helper functions
 (define-private (is-valid-string (str (string-ascii 100)))
@@ -191,11 +193,29 @@
   )
 )
 
+;; Emergency pause functions
+(define-public (pause-contract)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set contract-paused true)
+    (ok true)
+  )
+)
+
+(define-public (unpause-contract)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (var-set contract-paused false)
+    (ok true)
+  )
+)
+
 ;; Public functions
 (define-public (list-fashion-item (title (string-ascii 100)) (description (string-ascii 500)) 
                                   (category (string-ascii 50)) (size (string-ascii 10)) 
                                   (daily-rate uint) (security-deposit uint))
   (let ((item-id (var-get next-item-id)))
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (is-valid-string title) ERR_INVALID_PRICE)
     (asserts! (is-valid-description description) ERR_INVALID_PRICE)
     (asserts! (is-valid-category category) ERR_INVALID_PRICE)
@@ -257,6 +277,7 @@
                                                    daily-rate: uint, 
                                                    security-deposit: uint })))
   (let ((items-count (len items)))
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> items-count u0) ERR_EMPTY_BATCH)
     (asserts! (<= items-count MAX_BULK_ITEMS) ERR_BATCH_TOO_LARGE)
     
@@ -271,6 +292,7 @@
         (security-deposit (get security-deposit item))
         (total-payment (+ total-cost security-deposit)))
     
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (is-valid-item-id item-id) ERR_ITEM_NOT_FOUND)
     (asserts! (get available item) ERR_ITEM_NOT_AVAILABLE)
     (asserts! (is-valid-duration duration-days) ERR_INVALID_DURATION)
@@ -338,6 +360,7 @@
 ;; Bulk rent items function
 (define-public (bulk-rent-items (rental-requests (list 10 { item-id: uint, duration-days: uint })))
   (let ((requests-count (len rental-requests)))
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (> requests-count u0) ERR_EMPTY_BATCH)
     (asserts! (<= requests-count MAX_BULK_ITEMS) ERR_BATCH_TOO_LARGE)
     
@@ -447,6 +470,7 @@
 ;; Dispute Resolution Functions
 (define-public (register-arbitrator (stake-amount uint))
   (begin
+    (asserts! (not (var-get contract-paused)) ERR_CONTRACT_PAUSED)
     (asserts! (>= stake-amount MIN_ARBITRATOR_STAKE) ERR_INSUFFICIENT_STAKE)
     (asserts! (not (is-arbitrator tx-sender)) ERR_ALREADY_ARBITRATOR)
     
@@ -712,4 +736,8 @@
 
 (define-read-only (get-max-bulk-items)
   MAX_BULK_ITEMS
+)
+
+(define-read-only (is-contract-paused)
+  (var-get contract-paused)
 )
