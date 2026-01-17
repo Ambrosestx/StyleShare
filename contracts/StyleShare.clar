@@ -26,6 +26,8 @@
 (define-constant ERR_EMPTY_BATCH (err u121))
 (define-constant ERR_BATCH_TOO_LARGE (err u122))
 (define-constant ERR_CONTRACT_PAUSED (err u123))
+(define-constant ERR_NO_FEES_TO_WITHDRAW (err u124))
+(define-constant ERR_WITHDRAWAL_FAILED (err u125))
 
 ;; Constants for dispute system
 (define-constant MIN_ARBITRATOR_STAKE u1000000) ;; 1 STX minimum stake
@@ -120,6 +122,7 @@
 (define-data-var platform-fee-rate uint u250) ;; 2.5% in basis points
 (define-data-var total-arbitrators uint u0)
 (define-data-var contract-paused bool false)
+(define-data-var accumulated-fees uint u0) ;; Track platform fees
 
 ;; Helper functions
 (define-private (is-valid-string (str (string-ascii 100)))
@@ -207,6 +210,27 @@
     (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
     (var-set contract-paused false)
     (ok true)
+  )
+)
+
+;; Platform fee withdrawal function
+(define-public (withdraw-platform-fees)
+  (let ((fees (var-get accumulated-fees)))
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+    (asserts! (> fees u0) ERR_NO_FEES_TO_WITHDRAW)
+    
+    ;; Reset accumulated fees before transfer to prevent reentrancy
+    (var-set accumulated-fees u0)
+    
+    ;; Transfer fees to contract owner
+    (match (as-contract (stx-transfer? fees tx-sender CONTRACT_OWNER))
+      success (ok fees)
+      error (begin
+        ;; Restore fees on failure
+        (var-set accumulated-fees fees)
+        ERR_WITHDRAWAL_FAILED
+      )
+    )
   )
 )
 
@@ -388,6 +412,9 @@
     ;; Calculate payments
     (let ((platform-fee (calculate-platform-fee (get total-cost rental)))
           (owner-payment (- (get total-cost rental) platform-fee)))
+      
+      ;; Accumulate platform fees
+      (var-set accumulated-fees (+ (var-get accumulated-fees) platform-fee))
       
       ;; Transfer payment to owner
       (try! (as-contract (stx-transfer? owner-payment tx-sender (get owner rental))))
@@ -620,6 +647,8 @@
         ;; Defendant wins - pay defendant and return security deposit
         (begin
           (let ((owner-payment (- (get total-cost rental) platform-fee)))
+            ;; Accumulate platform fees
+            (var-set accumulated-fees (+ (var-get accumulated-fees) platform-fee))
             (try! (as-contract (stx-transfer? owner-payment tx-sender (get defendant dispute))))
             (try! (as-contract (stx-transfer? (get security-deposit rental) tx-sender (get complainant dispute))))
           )
@@ -740,4 +769,8 @@
 
 (define-read-only (is-contract-paused)
   (var-get contract-paused)
+)
+
+(define-read-only (get-accumulated-fees)
+  (var-get accumulated-fees)
 )
