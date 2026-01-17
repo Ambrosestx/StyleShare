@@ -13,6 +13,7 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - **Secure Rental System**: Automated escrow system holds payments and security deposits until items are returned
 - **Reputation System**: Built-in rating system for items and users to build trust in the marketplace
 - **Dispute Resolution System**: Multi-signature arbitration system for rental conflicts with community-voted arbitrators
+- **Platform Fee Management**: Automatic fee collection with secure withdrawal system for platform sustainability
 - **Emergency Pause Mechanism**: Contract owner can pause operations for maintenance or security incidents
 - **Multi-Category Support**: Supports various fashion categories with size specifications
 - **Flexible Duration**: Rental periods from 1 day up to 365 days
@@ -38,7 +39,8 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - `resolve-dispute`: Execute dispute resolution based on community votes
 - `deactivate-arbitrator`: Deactivate arbitrator status and retrieve stake
 
-**Emergency Functions:**
+**Platform Management Functions:**
+- `withdraw-platform-fees`: Withdraw accumulated platform fees (owner only)
 - `pause-contract`: Pause all marketplace operations (owner only)
 - `unpause-contract`: Resume marketplace operations (owner only)
 
@@ -59,6 +61,72 @@ StyleShare revolutionizes fashion accessibility by creating a trustless marketpl
 - `get-dispute-voting-period`: Voting period duration for disputes
 - `get-max-bulk-items`: Maximum items allowed in bulk operations
 - `is-contract-paused`: Check if contract is currently paused
+- `get-accumulated-fees`: View total platform fees ready for withdrawal
+
+## Platform Fee Management System
+
+### Overview
+The platform fee management system ensures sustainable operations by automatically collecting fees from successful rentals and providing a secure withdrawal mechanism for the contract owner.
+
+### How It Works
+
+**Fee Collection:**
+- Platform collects 2.5% fee on every successful rental
+- Fees automatically accumulate during `return-item` operations
+- Fees also collected when disputes resolve in favor of defendants
+- All fees tracked transparently on-chain via `accumulated-fees` variable
+
+**Fee Withdrawal:**
+- Only contract owner can withdraw accumulated fees
+- Call `withdraw-platform-fees` to transfer fees to owner
+- Function includes reentrancy protection
+- Fees reset to zero before transfer to prevent double-spending
+- Automatic rollback on transfer failure
+
+**Security Features:**
+- **Reentrancy Protection**: Fees reset before transfer
+- **Owner-Only Access**: Strict authorization checks
+- **Atomic Operations**: All-or-nothing transfers
+- **Error Recovery**: Failed withdrawals restore fee balance
+- **Transparency**: Accumulated fees visible to all users
+
+### Fee Withdrawal Process
+
+```clarity
+;; Check accumulated fees
+(get-accumulated-fees) ;; Returns current balance
+
+;; Withdraw fees (owner only)
+(withdraw-platform-fees)
+;; Returns: (ok <amount-withdrawn>)
+;; Or: ERR_NO_FEES_TO_WITHDRAW if balance is zero
+;; Or: ERR_WITHDRAWAL_FAILED if transfer fails
+```
+
+### Use Cases
+
+**Regular Withdrawals:**
+```clarity
+;; Platform owner withdraws monthly fees
+(withdraw-platform-fees)
+;; Funds transferred to contract owner
+;; Accumulated fees reset to zero
+```
+
+**Emergency Scenarios:**
+```clarity
+;; If withdrawal fails, fees are preserved
+(withdraw-platform-fees)
+;; On failure: fees remain in accumulated-fees
+;; Can retry after resolving issue
+```
+
+**Transparency Check:**
+```clarity
+;; Anyone can check pending fees
+(get-accumulated-fees)
+;; Returns: total STX ready for withdrawal
+```
 
 ## Emergency Pause System
 
@@ -99,6 +167,7 @@ Critical user functions remain available:
 - `resolve-dispute` - Disputes can be resolved
 - `deactivate-arbitrator` - Arbitrators can withdraw stakes
 - `update-item-availability` - Owners can manage their items
+- `withdraw-platform-fees` - Owner can withdraw fees
 - All read-only functions remain available
 
 ### Use Cases
@@ -155,6 +224,11 @@ Critical user functions remain available:
 ### Arbitrators
 - Stake amount, case history, reputation scores
 - Active status, voting participation
+
+### Platform State
+- Accumulated fees tracking
+- Contract pause status
+- Platform fee rate (2.5%)
 
 ## Bulk Operations
 
@@ -267,6 +341,13 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 4. Build reputation through fair arbitration
 5. Deactivate and retrieve stake when needed
 
+### For Platform Owner
+1. Deploy contract (becomes CONTRACT_OWNER)
+2. Monitor platform operations
+3. Withdraw accumulated fees periodically using `withdraw-platform-fees`
+4. Use emergency pause if needed for security/maintenance
+5. Check fee balance anytime with `get-accumulated-fees`
+
 ## Security Features
 
 - **Input Validation**: All parameters validated before processing
@@ -280,6 +361,8 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **No Unchecked Data**: All data properly validated throughout execution
 - **Emergency Pause**: Circuit breaker for security incidents
 - **Owner Controls**: Critical admin functions protected by ownership checks
+- **Reentrancy Protection**: Fee withdrawals use checks-effects-interactions pattern
+- **Fee Integrity**: Automatic fee accumulation with secure withdrawal
 
 ## Error Codes
 
@@ -312,18 +395,42 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - `u121`: Empty batch - no items provided
 - `u122`: Batch too large - exceeds maximum of 10 items
 
-**Emergency Controls:**
+**Emergency & Platform Management:**
 - `u123`: Contract paused - operations temporarily disabled
+- `u124`: No fees to withdraw - accumulated fees is zero
+- `u125`: Withdrawal failed - transfer error occurred
 
 ## Platform Economics
 
 - **Platform Fee**: 2.5% of rental cost (250 basis points)
 - **Security Deposits**: Set individually by item owners
 - **Payment Flow**: Automatic distribution upon item return or dispute resolution
+- **Fee Collection**: Automatic accumulation from all successful rentals and resolved disputes
+- **Fee Withdrawal**: Owner-only access with reentrancy protection
 - **Rating System**: 1-5 star ratings for quality assurance
 - **Arbitrator Staking**: Minimum 1 STX stake (1,000,000 microSTX)
 - **Dispute Resolution**: Community-driven with economic incentives for fair arbitration
 - **Bulk Discounts**: Reduced per-item transaction costs through batching
+
+## Benefits of Platform Fee Management
+
+### For Platform Owner
+- **Revenue Tracking**: Real-time visibility of accumulated fees
+- **Secure Withdrawals**: Protected against reentrancy attacks
+- **Flexible Timing**: Withdraw fees on any schedule
+- **Error Recovery**: Failed transfers preserve fee balance
+
+### For Users
+- **Transparency**: Anyone can view accumulated fees
+- **Trust**: Clear fee structure (2.5% always)
+- **Reliability**: Fees handled automatically
+- **Fairness**: Consistent fee application across all rentals
+
+### For the Platform
+- **Sustainability**: Revenue model for ongoing operations
+- **Security**: Best practices for fund management
+- **Scalability**: Automated fee collection scales with usage
+- **Compliance**: Clear audit trail for all fees
 
 ## Benefits of Emergency Pause
 
@@ -399,6 +506,7 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Upgradeability**: Extensible design for future enhancements
 - **Bulk Processing**: Efficient fold operations with proper error propagation
 - **Emergency Controls**: Built-in circuit breaker for security
+- **Fee Management**: Automatic collection with secure withdrawal
 
 ### Emergency Pause Implementation
 - **State Variable**: Single boolean flag controls pause state
@@ -407,6 +515,13 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Read Functions**: Query functions always available
 - **Critical Path**: Return and dispute functions remain operational
 - **Atomic State**: Pause state changes take effect immediately
+
+### Fee Management Implementation
+- **Automatic Collection**: Fees accumulated during `return-item` and `resolve-dispute`
+- **Reentrancy Protection**: Fees reset before transfer using checks-effects-interactions
+- **Error Recovery**: Failed withdrawals restore original balance
+- **Owner Authorization**: Strict ownership checks on withdrawal
+- **Transparent Tracking**: On-chain visibility of all accumulated fees
 
 ### Bulk Operations Flow
 1. Validate batch size (1-10 items)
@@ -422,14 +537,24 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 3. Minimum 3 votes required for resolution
 4. Majority vote determines outcome
 5. Automatic fund distribution based on result
-6. Arbitrator statistics updated for reputation tracking
+6. Platform fees collected on defendant wins
+7. Arbitrator statistics updated for reputation tracking
 
 ## Testing Recommendations
+
+### Platform Fee Management Testing
+- Verify fees accumulate correctly on returns
+- Test withdrawal with zero balance
+- Verify only owner can withdraw
+- Test reentrancy protection
+- Verify rollback on failed transfer
+- Test fee accumulation on dispute resolution
+- Verify accumulated-fees read-only function
 
 ### Emergency Pause Testing
 - Verify only owner can pause/unpause
 - Test all functions are blocked when paused
-- Verify critical functions (return, disputes) still work
+- Verify critical functions (return, disputes, withdrawals) still work
 - Test pause state persists correctly
 - Verify unpause restores full functionality
 - Test unauthorized pause attempts fail
@@ -464,10 +589,12 @@ A user needs an outfit for a wedding: dress, shoes, and accessories. They can re
 - **Batch Return Operations**: Return multiple items simultaneously
 - **Scheduled Rentals**: Pre-book items for future dates
 - **Bulk Rating System**: Rate multiple rentals in one transaction
-- **Analytics Dashboard**: Usage statistics for bulk operations
+- **Analytics Dashboard**: Usage statistics for bulk operations and fees
 - **Automated Pause Triggers**: Smart pause based on suspicious activity detection
 - **Multi-sig Admin**: Multiple owners for critical functions
 - **Gradual Resume**: Phased unpause for high-traffic periods
+- **Fee Rate Adjustment**: Dynamic fee rates based on market conditions
+- **Treasury Management**: Advanced fund management for platform fees
 
 ## Contributing
 
@@ -480,8 +607,19 @@ We welcome contributions! Please ensure:
 - Test coverage for new functionality
 - Security considerations documented
 - Emergency pause integration for new critical functions
+- Fee handling properly implemented for revenue functions
 
 ## Change Log
+
+### Version 2.2.0 - Platform Fee Management System
+- Added `withdraw-platform-fees` function for owner fee withdrawal
+- Added `accumulated-fees` state variable to track platform revenue
+- Added `get-accumulated-fees` read-only function for transparency
+- Integrated fee accumulation in `return-item` function
+- Integrated fee accumulation in `resolve-dispute` for defendant wins
+- Implemented reentrancy protection in withdrawal function
+- New error codes: `ERR_NO_FEES_TO_WITHDRAW` (u124), `ERR_WITHDRAWAL_FAILED` (u125)
+- Enhanced platform sustainability and revenue management
 
 ### Version 2.1.0 - Emergency Pause System
 - Added `pause-contract` and `unpause-contract` functions for emergency control
@@ -498,10 +636,3 @@ We welcome contributions! Please ensure:
 - Added error codes for batch operations (u121, u122)
 - Optimized gas costs through batching
 - Enhanced user experience for power users
-
----
-
-**Version**: 2.1.0 (Emergency Pause System)  
-**License**: MIT  
-**Blockchain**: Stacks  
-**Language**: Clarity
